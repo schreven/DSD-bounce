@@ -1,0 +1,461 @@
+/*
+ * bounce.c
+ *
+ *  Created on: 27 mai 2016
+ *      Author: cdmvansc
+ */
+
+
+#include <stdio.h>
+#include "xparameters.h"
+#include "xbasic_types.h"
+#include "xstatus.h"
+#include "xil_exception.h"
+#include "xgpio.h"
+#include "mb_interface.h"
+#include "bounce_parameters.h"
+#include "stdlib.h"
+#include "math.h"
+
+//Definition of the structures representing the state of the game
+
+typedef struct {
+	Xuint32 score;
+	Xuint32 highscore;
+	Xuint32 plate_x;
+	Xuint32 plate_y;
+	Xuint32 subplate_x;
+	Xuint32 subplate_y;
+
+} Game;
+
+typedef struct {
+		Xuint8 active;
+		Xuint32 pos_x;
+		double pos_x_double;
+		double speed_x;//-1 for movement towards left border, 1 for movement towards right border
+		double acceleration_x;
+		Xuint32 pos_y;
+		double pos_y_double;
+		double speed_y; //-1 for movement towards plate, 1 for movement away from plate
+		double acceleration_y;
+	} Ball;
+
+typedef struct {
+		Xuint8 active;
+		Xuint32 pos_x;
+		Xuint32 pos_y;
+		double pos_y_double;
+		double speed_y;
+		double acceleration_y;
+	} Boost;
+
+typedef struct {
+	Xuint32 pos_x;
+	Xuint32 pos_y;
+} Block;
+
+
+
+//Initialization of the structures
+Game state;
+Ball ball_array[4];
+Boost boost_array[2];
+Block block_array[2];
+
+
+
+
+//Definition of the functions
+void initGame();
+void drawGame();
+void bounceUpdateHandler(void);
+void interruptHandler(void *data);
+int playSound(int soundnumb);
+Ball createBall();
+Ball emptyBall();
+Boost createBoost(Xuint32 pos_x);
+
+XStatus setupTimer();
+XStatus setupGPIO();
+
+
+XGpio GpioLeds;
+XGpio PushButtons;
+Xuint32 offset_array_x[4] = {BALL1X_OFFSET, BALL2X_OFFSET, BALL3X_OFFSET, BALL4X_OFFSET};
+Xuint32 offset_array_y[4] = {BALL1Y_OFFSET, BALL2Y_OFFSET, BALL3Y_OFFSET, BALL4Y_OFFSET};
+Xuint32 tick;
+
+int t[5];
+int i; 	int j;
+
+
+
+int main()
+{
+   print("------------------------\n\r");
+   print("--- Welcome to Bounce---\n\r");
+   print("------------------------\n\r");
+
+
+   XStatus status;
+   /* Initialize the GPIO peripheral. The device ID is included in the xparameters.h header (in the bsp library)*/
+   status = XGpio_Initialize(&GpioLeds, XPAR_LEDS_8BIT_DEVICE_ID);
+   if (status != XST_SUCCESS) { xil_printf("ERROR initializing GPIO\r\n");
+   return XST_FAILURE; }
+   /* By default, the GPIO is initialized as an input peripheral. For the LEDs the data
+   * direction must changed to work as an output */
+   XGpio_SetDataDirection (&GpioLeds, 1, 0x00);
+
+   status = setupTimer();
+   if(status != XST_SUCCESS)
+	   return XST_FAILURE;
+   status = setupGPIO();
+   if(status != XST_SUCCESS)
+   	   return XST_FAILURE;
+
+   initGame();
+   drawGame();
+
+   while(1);
+
+   return 0;
+}
+
+
+//Initialize the game
+void initGame()
+{
+	tick=1;
+
+	//save the highscore
+	if(state.highscore<state.score)
+			{state.highscore=state.score;}
+
+	state.score=0;
+	state.plate_x = (SCREEN_WIDTH - PLATE_WIDTH)/2;
+	state.plate_y = (SCREEN_HEIGHT - PLATE_HEIGHT - PLATEZONE_HEIGHT/2);
+	state.subplate_x = 0;
+	state.subplate_y= 0;
+
+	block_array[0].pos_x = SCREEN_WIDTH/4 - BLOCK_WIDTH/2;
+	block_array[0].pos_y = SIDE_SIZE;
+	block_array[1].pos_x = 3*SCREEN_WIDTH/4 - BLOCK_WIDTH/2;
+	block_array[1].pos_y = SIDE_SIZE;
+
+	boost_array[0]=createBoost(SCREEN_WIDTH/4 - BOOST_WIDTH/2);
+	boost_array[1]=createBoost(3*SCREEN_WIDTH/4 - BOOST_WIDTH/2);
+
+	for (i=0; i<=BALL_NUM-1; i++){
+		ball_array[i] = emptyBall();
+	}
+	ball_array[0] = createBall();
+
+	setBuzzact(0);
+	//XGpio_DiscreteWrite(&GpioLeds, 1, 127);
+
+
+}
+
+
+// Draw the game by sending the positions of the elements to the graphics ip-core
+void drawGame()
+{
+	setPlateX(state.plate_x);
+	setPlateY(state.plate_y);
+	setSubplateX(state.subplate_x);
+	setSubplateY(state.subplate_y);
+	setScore(state.score);
+	setHighScore(state.highscore);
+
+	for (i=0; i<=BALL_NUM-1; i++){
+	SET_PONG_MEMORY(offset_array_x[i],ball_array[i].pos_x);
+	SET_PONG_MEMORY(offset_array_y[i],ball_array[i].pos_y);
+	}
+	setBoost1Y(boost_array[0].pos_y);
+	setBoost2Y(boost_array[1].pos_y);
+	setBlock1Y(block_array[0].pos_y);
+	setBlock2Y(block_array[1].pos_y);
+
+}
+
+
+/**
+ * bounceUpdateHandler
+ * This function will update the position of the plate and
+ * the ball. Afterwards it will check for collisions of the
+ * ball with the walls or the plate and if needed change the
+ * direction of the ball.
+ * In case the player presses the restart button or if he
+ * misses the ball the game will be restarted.
+ *
+ */
+void bounceUpdateHandler(void)
+{
+
+//Read the state of the buttons
+	Xuint32 buttons = XGpio_DiscreteRead(&PushButtons, 1);
+	if (buttons == LEFT_BUTTON_MASK){
+						   XGpio_DiscreteWrite(&GpioLeds, 1, getKeyvalue());}
+
+//increment the tick
+	tick += 1;
+
+
+//handle the balls movements and their collisions
+	for (i=0; i<=BALL_NUM-1; i++){
+		if (ball_array[i].active == 1){
+				ball_array[i].speed_x = ball_array[i].speed_x + ball_array[i].acceleration_x;
+				ball_array[i].pos_x_double = ball_array[i].pos_x_double + ball_array[i].speed_x;
+				ball_array[i].pos_x = ball_array[i].pos_x_double;
+				ball_array[i].speed_y = ball_array[i].speed_y + ball_array[i].acceleration_y;
+				ball_array[i].pos_y_double =  ball_array[i].pos_y_double +  ball_array[i].speed_y;
+				ball_array[i].pos_y = ball_array[i].pos_y_double;
+
+
+				if(ball_array[i].pos_y >= state.plate_y - BALL_HEIGHT  && ball_array[i].pos_y <= state.plate_y )
+					{if(ball_array[i].pos_x + BALL_WIDTH >= state.plate_x && ball_array[i].pos_x<=state.plate_x+PLATE_WIDTH)
+						{t[0] = playSound(BUZZSOUND1);
+						ball_array[i].speed_y = -fabs(ball_array[i].speed_y);
+						state.score +=1;}
+
+					if(ball_array[i].pos_x + BALL_WIDTH>= state.plate_x && ball_array[i].pos_x+BALL_WIDTH/2<=state.plate_x+PLATE_WIDTH/4)
+						{ball_array[i].speed_x -=2;}
+					if(ball_array[i].pos_x + BALL_WIDTH/2>= state.plate_x + 3*PLATE_WIDTH/4 && ball_array[i].pos_x<=state.plate_x + PLATE_WIDTH)
+						{ball_array[i].speed_x +=2;}}
+
+				if(ball_array[i].pos_y >= state.subplate_y - BALL_HEIGHT  && ball_array[i].pos_y <= state.subplate_y
+				   && ball_array[i].pos_x + BALL_WIDTH >= state.subplate_x && ball_array[i].pos_x<=state.subplate_x+SUBPLATE_WIDTH)
+					{t[0] = playSound(BUZZSOUND1);
+					ball_array[i].speed_y = -fabs(ball_array[i].speed_y);}
+
+				if(ball_array[i].pos_y >= SCREEN_HEIGHT - BALL_HEIGHT)
+					{ball_array[i]= emptyBall();
+					int sum_active = 0;
+					for (i=0; i<=BALL_NUM-1;i++)
+						{sum_active += ball_array[i].active;}
+					if (sum_active <=1)
+						{initGame();}}
+				else if(ball_array[i].pos_y <= SIDE_SIZE)
+					{ball_array[i].speed_y = fabs(ball_array[i].speed_y);}
+
+				if(ball_array[i].pos_x<=SIDE_SIZE)
+					{ball_array[i].speed_x = fabs(ball_array[i].speed_x);}
+				else if(ball_array[i].pos_x>=SCREEN_WIDTH-BALL_WIDTH-SIDE_SIZE)
+					{ball_array[i].speed_x = -fabs(ball_array[i].speed_x);}
+
+				for (j=0; j<=1; j++){
+					if(ball_array[i].pos_y<=block_array[j].pos_y && ball_array[i].pos_x +BALL_WIDTH >= block_array[j].pos_x && ball_array[i].pos_x <= block_array[j].pos_x+BLOCK_WIDTH)
+						{if (ball_array[i].pos_y>=block_array[j].pos_y - fabs(ball_array[i].speed_y) -1)
+							{ball_array[i].speed_y = fabs(ball_array[i].speed_y);}
+						else {ball_array[i].speed_x *= -1;}}}
+
+				if(ball_array[i].speed_x>BALL_X_MAX_SPEED)
+					{ball_array[i].speed_x=BALL_X_MAX_SPEED;}
+
+				for (j=i-1; j>=0; j--){
+					if(ball_array[i].pos_x + BALL_WIDTH >= ball_array[j].pos_x && ball_array[i].pos_x <= ball_array[j].pos_x + BALL_WIDTH
+					   && ball_array[i].pos_y+BALL_HEIGHT >= ball_array[j].pos_y && ball_array[i].pos_y <= ball_array[j].pos_y + BALL_HEIGHT)
+							{if (ball_array[i].pos_x +BALL_WIDTH - fabs(ball_array[i].speed_x-ball_array[j].speed_x)-1 <=ball_array[j].pos_x
+								|| ball_array[i].pos_x  >=ball_array[j].pos_x +BALL_WIDTH - fabs(ball_array[i].speed_x-ball_array[j].speed_x)-1 )
+								{double speed_temp_x = ball_array[i].speed_x;
+								ball_array[i].speed_x = ball_array[j].speed_x;
+								ball_array[j].speed_x = speed_temp_x;}
+							else {
+								double speed_temp_y = ball_array[i].speed_y;
+								ball_array[i].speed_y = ball_array[j].speed_y;
+								ball_array[j].speed_y = speed_temp_y;}}}
+		}
+	}
+
+//handle the boosts movements and their collisions
+	for (i=0; i<=1; i++){
+		boost_array[i].speed_y = boost_array[i].speed_y + boost_array[i].acceleration_y;
+		boost_array[i].pos_y_double =  boost_array[i].pos_y_double +  boost_array[i].speed_y;
+		boost_array[i].pos_y = boost_array[i].pos_y_double;
+		if(((boost_array[i].pos_y +BOOST_WIDTH >= state.plate_y  && boost_array[i].pos_y <= state.plate_y  + PLATE_HEIGHT)
+			&& (boost_array[i].pos_x + BOOST_WIDTH >= state.plate_x && boost_array[i].pos_x<=state.plate_x+PLATE_WIDTH))
+		    || ((boost_array[i].pos_y +BOOST_WIDTH >= state.subplate_y  && boost_array[i].pos_y <= state.subplate_y  + SUBPLATE_HEIGHT)
+		    && (boost_array[i].pos_x + BOOST_WIDTH >= state.subplate_x && boost_array[i].pos_x<=state.subplate_x+SUBPLATE_WIDTH)))
+				{t[1] = playSound(BUZZSOUND2);
+				block_array[i].pos_y =0;
+				boost_array[i].pos_y_double =0;
+				boost_array[i].speed_y = 0;
+				}
+		if(boost_array[i].pos_y +BOOST_WIDTH>= SCREEN_HEIGHT)
+			{boost_array[i].pos_y_double=0;
+			boost_array[i].speed_y = 0;}}
+
+
+//handle the blocks movement and their collisions
+	if (tick % BLOCKS_INV_SPEED == 0)
+		{block_array[0].pos_y +=1;
+		block_array[1].pos_y +=1;}
+	if(block_array[0].pos_y>=SCREEN_HEIGHT-PLATEZONE_HEIGHT || block_array[1].pos_y>=SCREEN_HEIGHT-PLATEZONE_HEIGHT)
+		{initGame();}
+
+
+//read the keyboard and perform the related action (plate movement, subplate placement, restart game)
+	if (getKeyvalue() == 214){ //LEFT x"D6"
+		if (state.plate_x <= SIDE_SIZE)
+			{state.plate_x = SIDE_SIZE;}
+		else
+			{state.plate_x -= PLATE_SPEED;}}
+	else if (getKeyvalue() == 232){ //RIGHT x"E8"
+			if (state.plate_x >= SCREEN_WIDTH-PLATE_WIDTH - SIDE_SIZE)
+				{state.plate_x = SCREEN_WIDTH-PLATE_WIDTH-SIDE_SIZE;}
+			else
+				{state.plate_x += PLATE_SPEED;}}
+	else if (getKeyvalue() == 228){ //DOWN x"E4"
+				if (state.plate_y >= SCREEN_HEIGHT-PLATE_HEIGHT )
+					{state.plate_y = SCREEN_HEIGHT-PLATE_HEIGHT;}
+				else
+					{state.plate_y += PLATE_SPEED;}}
+	else if (getKeyvalue() == 234){ //UP x"EA"
+				if (state.plate_y <= SCREEN_HEIGHT - PLATEZONE_HEIGHT)
+				{state.plate_y = SCREEN_HEIGHT - PLATEZONE_HEIGHT;}
+				else
+				{state.plate_y -= PLATE_SPEED;}
+		}
+	else if (getKeyvalue() == 40)  //CONTROL x"28"
+				{state.subplate_x= state.plate_x + PLATE_WIDTH/4 +2;
+				state.subplate_y = state.plate_y - SUBPLATE_HEIGHT;}
+
+	else if(getKeyvalue() == 34)  // ALT GR x"22"
+				{initGame();}
+
+
+
+//add an additional ball per regular time basis
+	if (tick % (UPDATE_RATE*10) == 0)
+		{for (i=0; i<=BALL_NUM-1; i++)
+			{if (ball_array[i].active==0)
+				{ball_array[i]= createBall();
+				 break;}}}
+
+
+
+//define the sound timings and their stop conditions
+	if ((tick-t[0]>0.1*UPDATE_RATE && tick-t[1]>0.1*UPDATE_RATE
+			&& tick-t[2] >UPDATE_RATE/6 && tick-t[3]> UPDATE_RATE/6 && tick-t[4]> UPDATE_RATE/6)
+			|| tick<=UPDATE_RATE)
+			{setBuzzact(0);}
+
+	else if(tick-t[2]>= UPDATE_RATE/6 && tick-t[2]<= UPDATE_RATE/6 +2)
+		{t[3] = playSound(BUZZSOUND4);}
+	else if(tick-t[3]>= UPDATE_RATE/6 && tick-t[3]<= UPDATE_RATE/6 +2)
+		{t[4] = playSound(BUZZSOUND3);}
+
+	//if(buttons==RESTART_BUTTON_MASK)
+		//{t[2] = playSound(BUZZSOUND3);}
+
+
+
+	drawGame();
+
+}
+
+/**
+ * interruptHandler
+ * This funciton will be called when an interrupt occurs. The only
+ * interrupt is generated by our fixed interval timer so this
+ * function should get called at a rate of 1000Hz. As we want the
+ * bounceUpdateHandler function only to be called at a rate of 66Hz
+ * we need to downsample the interrupt rate here.
+ */
+void interruptHandler(void *data){
+	static Xuint32 count = 0;
+	count +=1;
+	if (count >= INTERRUPT_COUNT){
+		bounceUpdateHandler();
+		count = 0;}
+}
+
+
+Ball createBall(){
+	Ball ball;
+	ball.active = 1;
+	ball.pos_x = (rand()%2)*SCREEN_WIDTH;
+	ball.pos_x_double = (rand()%2)*SCREEN_WIDTH ;
+	ball.speed_x = 0.6 + (double)(rand()%20)/10; //-1 for movement towards left border, 1 for movement towards right border
+	ball.acceleration_x = 0;
+	ball.pos_y = (tick % BALL_Y_MAX) ;
+	ball.pos_y_double = (tick % BALL_Y_MAX) ;
+	ball.speed_y = -1; //-1 for movement towards plate, 1 for movement away from plate
+	ball.acceleration_y = (double)(2+(rand()%6))/ 200;
+	//t[2] = playSound(BUZZSOUND3);
+	return ball;
+}
+
+
+
+Ball emptyBall(){
+	Ball ball;
+	ball.active = 0;
+	ball.pos_x = 0;
+	ball.pos_x_double = 0;
+	ball.speed_x = 0; //-1 for movement towards left border, 1 for movement towards right border
+	ball.acceleration_x = 0;
+	ball.pos_y = 0;
+	ball.pos_y_double = 0;
+	ball.speed_y = 0; //-1 for movement towards plate, 1 for movement away from plate
+	ball.acceleration_y = 0;
+	return ball;
+}
+
+Boost createBoost(Xuint32 pos_x){
+	Boost boost;
+	boost.active = 1;
+	boost.pos_x=pos_x;
+	boost.pos_y=0;
+	boost.pos_y_double=0;
+	boost.speed_y=0;
+	boost.acceleration_y= 0.005;
+	return boost;
+
+}
+
+int playSound(int soundnumb){
+	setBuzzact(soundnumb);
+	int t=tick;
+	return t;
+}
+
+/**
+ * setupTimer
+ * Our fixed point timer will raise the interrupt line of the
+ * microblaze controller every millisecond. We need to set up
+ * the interrupt handling so the interruptHandler gets called.
+ */
+XStatus setupTimer()
+{
+	Xil_ExceptionInit();
+
+	Xil_ExceptionRegisterHandler(XIL_EXCEPTION_ID_INT, &interruptHandler, NULL);
+
+	Xil_ExceptionEnable();
+
+	return XST_SUCCESS;
+}
+
+
+
+
+/**
+ * setupGPIO
+ * Initializes the GPIO driver
+ * We need access to the GPIO to read out the Push Buttons
+ */
+XStatus setupGPIO()
+{
+	XStatus status;
+
+	status = XGpio_Initialize(&PushButtons, XPAR_PUSH_BUTTONS_5BIT_DEVICE_ID);
+	if(status != XST_SUCCESS)
+		return XST_FAILURE;
+	// We don't need to set Data Direction. GPIO is by default Input
+
+	return XST_SUCCESS;
+}
+
+
