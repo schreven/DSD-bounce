@@ -19,7 +19,7 @@ The binary file to directly upload the game to a board is in [binary](https://gi
 ![in-game-image](/images/in-game.png)
 
 ## Gameplay
-In this game the player has to keep a certain amount of balls (1 to 4) in the game to continue playing. These blue (squared) balls react to gravity and have different weights. They will bounce against anything (even one another). The game starts with 4 balls. A new one spawns every 10 seconds, with a maximum of 4 in the game at any time.
+In this game the player has to keep a certain amount of balls (1 to 4) in the game to continue playing. These blue (squared) balls react to gravity and have different weights. They will bounce against anything (even one another). A new one spawns every 10 seconds, with a maximum of 4 in the game at any time.
 
 To keep the balls from falling, the player can move the main-platform in all directions, in the lower part of the screen. A sub-platform can be dropped at the current location of the main platform. There can be only one sub-platform at any time. Each time a ball bounces on the main platform, the user gains points. Hitting a ball with the side of the platform will give it speed in that direction. Additionally, two large brown blocks will go down, at slow and constant speed. The blocks obstruct the game and cause a loss if they attain the bottom of the screen. To reset a block, the player must catch a green cube that falls from it.
 
@@ -33,3 +33,10 @@ Up-Down-Left-Right keyboard keys: move the main plate
 Ctrl: drop the sub-platform at the location of the main-platform
 
 Left-Right-Down-Up board keys: change minimum number of balls to keep playing to 1-2-3-4 respectively. This must be done at the start screen.
+
+## Contributor
+
+- Cyril van Schreven
+
+## Demo
+![demo](demo.gif)
