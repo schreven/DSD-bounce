@@ -1,6 +1,6 @@
 # DSD-bounce-game
 
-This repository presents the bounce game. It is single-player game, mixing the [pong](https://en.wikipedia.org/wiki/Pong) and [breakout](https://en.wikipedia.org/wiki/Breakout_(video_game) games. The game consists in moving platforms to stop balls from falling down, as long as possible.
+This repository presents the bounce game. It is single-player game, mixing the [pong](https://en.wikipedia.org/wiki/Pong) and [breakout](https://en.wikipedia.org/wiki/Breakout_(video_game)) games. The game consists in moving platforms to stop balls from falling down, as long as possible.
 
 ## Setup
 This game was developed and tested on the Xilinx ML-509 board; XUPV5-LX11T Evaluation Platform. The Xilinx Platform Studio and Embedded Development Kit (EDK) were used. The screen is to be connected through VGA and the keyboard is to be connected through ps2.
